@@ -30,7 +30,6 @@ void ws_comm(void* arg);
 void button_task_func(void* arg);
 void audio(void* arg);
 
-
 #define I2S_WS_TX  12
 #define I2S_SCK_TX 13
 #define I2S_DATA_OUT_TX  15
@@ -38,7 +37,6 @@ void audio(void* arg);
 #define I2S_SAMPLE_RATE   (16000)
 #define I2S_SAMPLE_BITS   (32)
 #define UPDATE_INTERVAL   (500)
-
 
 unsigned long last_update_sent = 0;
 bool isConnected;
@@ -60,7 +58,6 @@ const i2s_pin_config_t pin_config_tx = {
   .ws_io_num = I2S_WS_TX,   //blck
   .data_out_num = I2S_DATA_OUT_TX, //din
   .data_in_num = I2S_PIN_NO_CHANGE
-
 };
 
 bool tft_output(int16_t x, int16_t y, uint16_t w, uint16_t h, uint16_t* bitmap)
@@ -87,9 +84,9 @@ void setup() {
   i2sInit();
   tft.begin();
   tft.setRotation(3);
-  tft.setTextColor(0xFFFF, 0x0000);
+  tft.setTextColor(TFT_WHITE, TFT_BLACK); // Changed text color to white with black background
   tft.fillScreen(TFT_RED);
-  tft.setSwapBytes(true); // We need to swap the colour bytes (endianess)
+  tft.setSwapBytes(true); // We need to swap the color bytes (endianess)
 
   // The jpeg image can be scaled by a factor of 1, 2, 4, or 8
   TJpgDec.setJpgScale(1);
@@ -106,7 +103,6 @@ void setup() {
   Serial.println(IP);
 
   server.listen(8888);
-  
 
   button.setDebounceTime(50); // Set debounce time to 50 milliseconds
 
@@ -114,53 +110,38 @@ void setup() {
   button_semaphore = xSemaphoreCreateBinary();
   audio_task_semaphore = xSemaphoreCreateBinary();
   xTaskCreatePinnedToCore(ws_comm, "websocket server", 4096, NULL, 5, &ws_comm_task, 1);
-  xTaskCreatePinnedToCore(button_task_func, "button task", 2048, NULL, 5, &button_task, 1);
-
-  xTaskCreate(audio, "audio_task", 8192, NULL, 10, &audio_task);
-  
-  //xTaskCreatePinnedToCore(audio, "audio rcv", 4096, NULL, 5, &audio_task, 1);
-
-
-  
+  xTaskCreatePinnedToCore(button_task_func, "button task", 2048, NULL, 4, &button_task, 1);
+  xTaskCreatePinnedToCore(audio, "audio", 8192, NULL, 5, &audio_task, 1);
 }
 
 void loop() {
- if (server.poll()) {
+  if (server.poll()) {
     client = server.accept();
-     xSemaphoreGive(connection_established);
-     xSemaphoreGive(audio_task_semaphore);
-     
- }
+    xSemaphoreGive(connection_established);
+    xSemaphoreGive(audio_task_semaphore);
+  }
 }
-
-
 
 void audio(void* arg) {
   while (1) {
     if (xSemaphoreTake(audio_task_semaphore, portMAX_DELAY) == pdTRUE) {
-    while (client.available()){
-    last_update_sent = millis();
-    client.poll();
-    WebsocketsMessage msg = client.readBlocking();
-    char *buf_ptr = (char*)msg.c_str();
-    size_t bytes_written = static_cast<size_t>(msg.length());
-    i2s_write(I2S_PORT, buf_ptr, bytes_written, &bytes_written, portMAX_DELAY);
+      while (client.available()) {
+        last_update_sent = millis();
+        client.poll();
+        WebsocketsMessage msg = client.readBlocking();
+        const uint8_t* buf_ptr = reinterpret_cast<const uint8_t*>(msg.c_str());
+        size_t bytes_written = static_cast<size_t>(msg.length());
+        i2s_write(I2S_PORT, buf_ptr, bytes_written, &bytes_written, portMAX_DELAY);
 
-    int32_t sample = (int32_t)buf_ptr[3] << 24;
-    sample |= (int32_t)buf_ptr[2] << 16;
-    sample |= (int32_t)buf_ptr[1] << 8;
-    sample |= (int32_t)buf_ptr[0];
+        int32_t sample = (int32_t)buf_ptr[3] << 24;
+        sample |= (int32_t)buf_ptr[2] << 16;
+        sample |= (int32_t)buf_ptr[1] << 8;
+        sample |= (int32_t)buf_ptr[0];
+      }
     }
-
-  }
-    
     vTaskDelay(pdMS_TO_TICKS(10)); // Adjust delay as needed
   }
 }
-
-
-
-
 
 void i2sInit() {
   i2s_driver_install(I2S_PORT, &i2s_config_tx, 0, NULL);
@@ -182,6 +163,7 @@ void button_task_func(void* arg) {
 
         // Display "Button pressed" on the TFT display
         tft.setCursor(0, 0);
+        tft.setTextColor(TFT_WHITE, TFT_BLACK);
         tft.println("Button pressed");
       }
 
