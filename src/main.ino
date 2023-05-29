@@ -1,3 +1,4 @@
+
 #include <SPI.h>
 #include <ArduinoWebsockets.h>
 #include <WiFi.h>
@@ -8,6 +9,7 @@
 #include "freertos/task.h"
 #include "freertos/semphr.h"
 #include "driver/i2s.h"
+#include "soc/rtc_wdt.h"
 
 const char* ssid = "ibrar";
 const char* password = "ibrarahmad";
@@ -19,82 +21,61 @@ WebsocketsClient client;
 
 SemaphoreHandle_t connection_established = NULL;
 SemaphoreHandle_t button_semaphore = NULL;
+SemaphoreHandle_t audio_semaphore = NULL;
 TaskHandle_t ws_comm_task = NULL;
 TaskHandle_t button_task = NULL;
-//TaskHandle_t audio_task = NULL;  // Audio task handle
-
+TaskHandle_t audio_task = NULL;
 
 unsigned long last_update_sent = 0;
+bool isConnected;
 bool isAudioPlaying = false;
 
 TFT_eSPI tft = TFT_eSPI(); // Invoke custom library
 
-// #define I2S_WS_TX  12
-// #define I2S_SCK_TX 13
-// #define I2S_DATA_OUT_TX  15
+#define I2S_WS_TX  12
+#define I2S_SCK_TX 13
+#define I2S_DATA_OUT_TX  15
 
-// #define I2S_PORT I2S_NUM_0
-// #define I2S_SAMPLE_RATE   (16000)
-// #define I2S_SAMPLE_BITS   (32)
-// #define UPDATE_INTERVAL   (500)
+#define I2S_PORT I2S_NUM_0
+#define I2S_SAMPLE_RATE   (16000)
+#define I2S_SAMPLE_BITS   (32)
+#define UPDATE_INTERVAL   (500)
 
-
-void ws_comm(void* arg);
-void button_task_func(void* arg);
-//void audio_task_func(void* arg);  // Audio task function
-//void i2s_write_from_client();
-//void i2sInit();
-//void startAudioPlayback();
-//void stopAudioPlayback();
-
-bool tft_output(int16_t x, int16_t y, uint16_t w, uint16_t h, uint16_t* bitmap)
-{
-  // Stop further decoding as the image is running off the bottom of the screen
-  if (y >= tft.height()) return 0;
-
-  // This function will clip the image block rendering automatically at the TFT boundaries
-  tft.pushImage(x, y, w, h, bitmap);
-
-  // Return 1 to decode the next block
-  return 1;
-}
-
-ezButton button(26); // Pin for the button
-
+ezButton button(26); // Pin for the 
+ezButton button1(35); //swetich case button
 bool buttonPressed = false;
 unsigned long lastButtonPressTime = 0;
 const unsigned long buttonCooldownTime = 5000; // Cooldown time in milliseconds
+bool button1Pressed = false;
+unsigned long lastButton1PressTime = 0;
+const unsigned long button1CooldownTime = 5000; // Cooldown time in milliseconds
 
-// const i2s_config_t i2s_config_tx = {
-//   .mode = i2s_mode_t(I2S_MODE_MASTER | I2S_MODE_TX),
-//   .sample_rate = 16000,
-//   .bits_per_sample = i2s_bits_per_sample_t(32),
-//   .channel_format = I2S_CHANNEL_FMT_ONLY_LEFT,
-//   .communication_format = i2s_comm_format_t(I2S_COMM_FORMAT_I2S | I2S_COMM_FORMAT_I2S_MSB),
-//   .intr_alloc_flags = ESP_INTR_FLAG_LEVEL1,
-//   .dma_buf_count = 32,
-//   .dma_buf_len = 64
-// };
+int button1PressCount = 0;
 
-// const i2s_pin_config_t pin_config_tx = {
-//   .bck_io_num = 13, // LRC
-//   .ws_io_num = 12,   // BCK
-//   .data_out_num = 15, // DIN
-//   .data_in_num = I2S_PIN_NO_CHANGE
-// };
+const i2s_config_t i2s_config_tx = {
+  .mode = i2s_mode_t(I2S_MODE_MASTER | I2S_MODE_TX),
+  .sample_rate = I2S_SAMPLE_RATE,
+  .bits_per_sample = i2s_bits_per_sample_t(I2S_SAMPLE_BITS),
+  .channel_format = I2S_CHANNEL_FMT_ONLY_LEFT,
+  .communication_format = i2s_comm_format_t(I2S_COMM_FORMAT_I2S | I2S_COMM_FORMAT_I2S_MSB),
+  .intr_alloc_flags = ESP_INTR_FLAG_LEVEL1,
+  .dma_buf_count = 32,
+  .dma_buf_len = 64
+};
+
+const i2s_pin_config_t pin_config_tx = {
+  .bck_io_num = I2S_SCK_TX, // LRC
+  .ws_io_num = I2S_WS_TX,   //blck
+  .data_out_num = I2S_DATA_OUT_TX, //din
+  .data_in_num = I2S_PIN_NO_CHANGE
+};
+
+WebsocketsMessage audioDatarecieveddd;
 
 void setup() {
   Serial.begin(115200);
   delay(1000);
 
-  // xTaskCreatePinnedToCore(
-  //     audio_task_func, /* Function to implement the task */
-  //     "audio task", /* Name of the task */
-  //     10000,  /* Stack size in words */
-  //     NULL,  /* Task input parameter */
-  //     0,  /* Priority of the task */
-  //     &audio_task,  /* Task handle. */
-  //     0); /* Core where the task should run */
 
   tft.begin();
   tft.setRotation(3);
@@ -119,59 +100,70 @@ void setup() {
   server.listen(8888);
 
   button.setDebounceTime(50); // Set debounce time to 50 milliseconds
+  button1.setDebounceTime(50); // Set debounce time to 50 milliseconds
+
+  last_update_sent = millis();
+  i2sInit();
+  isConnected = true;
+  Serial.println("Socket connected");
 
   connection_established = xSemaphoreCreateBinary();
   button_semaphore = xSemaphoreCreateBinary();
-  //xTaskCreate(ws_comm, "websocket server", 4096, NULL, 5, &ws_comm_task);
-  xTaskCreatePinnedToCore(
-   ws_comm, 
-   "websocket server",
-   4096, NULL,
-   5,
-   &ws_comm_task,
-   0);
+  audio_semaphore = xSemaphoreCreateBinary();
 
-  //xTaskCreate(button_task_func, "button task", 2048, NULL, 5, &button_task);
-  xTaskCreatePinnedToCore(
-    button_task_func, 
-    "button task", 
-    4096, 
-    NULL, 
-    5, 
-    &button_task, 
-    0);
- // xTaskCreate(audio_task_func, "audio task", 4096, NULL, 5, &audio_task);  // Create audio task
-  
+  xTaskCreate(ws_comm, "websocket server", 8192, NULL, 5, &ws_comm_task);
+  xTaskCreate(button_task_func, "button task", 2048, NULL, 5, &button_task);
+ // xTaskCreate(audio_task_func, "audio task", 4096, NULL, 5, &audio_task); // Create audio task
+}
+
+bool tft_output(int16_t x, int16_t y, uint16_t w, uint16_t h, uint16_t* bitmap)
+{
+  // Stop further decoding as the image is running off the bottom of the screen
+  if (y >= tft.height()) return 0;
+
+  // This function will clip the image block rendering automatically at the TFT boundaries
+  tft.pushImage(x, y, w, h, bitmap);
+
+  // Return 1 to decode the next block
+  return 1;
 }
 
 void loop() {
   if (server.poll()) {
     client = server.accept();
     xSemaphoreGive(connection_established);
+    i2sInit();
   }
-
-  //i2s_write_from_client();
 }
 
 void button_task_func(void* arg) {
   while (1) {
-     Serial.println("button task core");
-    Serial.println(xPortGetCoreID());
+    button1.loop(); // Call the button's loop function to update its state
+
+    if (button1.isPressed() && (millis() - lastButton1PressTime >= button1CooldownTime)) {
+      button1Pressed = true;
+      lastButton1PressTime = millis();
+
+      button1PressCount++;
+      if (button1PressCount > 2) {
+        button1PressCount = 0;
+        Serial.println("buttonpressed");
+      }
+
+      //xSemaphoreGive(button_semaphore);
+    }
+
+    if (button1Pressed && (millis() - lastButton1PressTime >= button1CooldownTime)) {
+      button1Pressed = false;
+    }
+
+    vTaskDelay(pdMS_TO_TICKS(20)); // Adjust delay as needed
+  }
     button.loop(); // Call the button's loop function to update its state
 
     if (button.isPressed() && !buttonPressed && (millis() - lastButtonPressTime >= buttonCooldownTime)) {
       buttonPressed = true;
       lastButtonPressTime = millis();
-
-      // Send message to the client
-      if (client.available()) {
-        client.send("Button pressed!");
-        Serial.println("Button pressed");
-
-        // Display "Button pressed" on the TFT display
-        tft.setCursor(0, 0);
-        tft.println("Button pressed");
-      }
 
       xSemaphoreGive(button_semaphore);
     }
@@ -181,112 +173,123 @@ void button_task_func(void* arg) {
     }
 
     vTaskDelay(pdMS_TO_TICKS(20)); // Adjust delay as needed
+    
   }
-}
 
-// Void Task1code( void * parameter) {
-//   for(;;) {
-//     Code for task 1 - infinite loop
-//     (...)
-//   }
-// }
-
-// void audio_task_func(void* arg) {
-//   i2sInit();  // Initialize I2S configuration
-
-//   while (1) {
-//     if (xSemaphoreTake(connection_established, portMAX_DELAY) == pdTRUE) {
-//       while (client.available()) {
-//         WebsocketsMessage msg = client.readBlocking();
-
-//         // Check if the message is "Start audio"
-//         if (msg.data() == "Start audio") {
-//           startAudioPlayback();
-//           isAudioPlaying = true;
-//         } else if (msg.data() == "Stop audio") {
-//           if (isAudioPlaying) {
-//             stopAudioPlayback();
-//             isAudioPlaying = false;
-//           }
-//         }
-
-//         vTaskDelay(pdMS_TO_TICKS(20)); // Adjust delay as needed
-//       }
-//     }
-//   }
-// }
 
 void ws_comm(void* arg) {
   while (1) {
     if (xSemaphoreTake(connection_established, portMAX_DELAY) == pdTRUE) {
       while (client.available()) {
-        WebsocketsMessage msg = client.readBlocking();
         
-        Serial.println("pic task core");
-        Serial.println(xPortGetCoreID());
-        // Decode and display the image
-        uint32_t t = millis();
 
-        // Get the width and height in pixels of the JPEG if you wish
-        uint16_t w = 0, h = 0;
-        TJpgDec.getJpgSize(&w, &h, (const uint8_t*)msg.c_str(), msg.length());
-        Serial.print("Width = ");
-        Serial.print(w);
-        Serial.print(", height = ");
-        Serial.println(h);
+        // Handle switch case based on buttonPressCount
+        switch (button1PressCount) {
+          case 0: // Button press
+            {
+              
+              client.send("Button pressed!");
+              Serial.println("Button pressed");
 
-        // Draw the image, top left at 0,0
-        TJpgDec.drawJpg(0, 0, (const uint8_t*)msg.c_str(), msg.length());
+              // Display "Button pressed" on the TFT display
+              tft.setCursor(0, 0);
+              tft.println("Button pressed");
+              client.poll();
+              delay(1000);
+            }
+            break;
 
-        // How much time did rendering take
-        t = millis() - t;
-        Serial.print(t);
-        Serial.println(" ms");
+          case 1: // Receive picture
+            { 
+              WebsocketsMessage msg = client.readBlocking();
+              // Decode and display the image
+              uint32_t t = millis();
 
-        // Send message to the client
-        if (xSemaphoreTake(button_semaphore, 0) == pdTRUE) {
-          client.send("Button pressed!");
-          Serial.println("Button pressed");
-        }
+              // Get the width and height in pixels of the JPEG if you wish
+              uint16_t w = 0, h = 0;
+              TJpgDec.getJpgSize(&w, &h, (const uint8_t*)msg.c_str(), msg.length());
+              Serial.print("Width = ");
+              Serial.print(w);
+              Serial.print(", height = ");
+              Serial.println(h);
 
+              // Draw the image, top left at 0,0
+              TJpgDec.drawJpg(0, 0, (const uint8_t*)msg.c_str(), msg.length());
+
+              // How much time did rendering take
+              t = millis() - t;
+              Serial.print(t);
+              Serial.println(" ms");
+            }
+            break;
+
+          case 2: // Allow audio
+          {
+          WebsocketsMessage msg = client.readBlocking();
+          const char* buf_ptr = msg.c_str();
+          size_t bytes_written = msg.length();
+          i2s_write(I2S_PORT, buf_ptr, bytes_written, &bytes_written, portMAX_DELAY);
+          Serial.println("audio data recieved");
+
+         if (strncmp(buf_ptr, "Start audio", 11) == 0) {
+            Serial.println("audio playing commad work");
+            isAudioPlaying = true;
+          }
+           else if (strncmp(buf_ptr, "Stop audio", 10) == 0) {
+            Serial.println("audio stop commad work");
+            isAudioPlaying = false;
+          }
+          }
+        //  memset(buf_ptr, 0, bytes_written); // Clear the buffer
+            break;
+         }
         vTaskDelay(pdMS_TO_TICKS(20)); // Adjust delay as needed
       }
     }
   }
 }
 
-// void i2sInit() {
-//   i2s_driver_install(I2S_PORT, &i2s_config_tx, 0, NULL);
-//   i2s_set_pin(I2S_PORT, &pin_config_tx);
-// }
 
-// void i2s_write_from_client() {
-//   if (client.available()) {
-//     client.onMessage([](WebsocketsMessage msg) {
-//       Serial.println("Got Message: " + msg.data());
-//       last_update_sent = millis();
-//       client.poll();
+// void audio_task_func(void* arg) {
+//   while (1) {
+//     if (xSemaphoreTake(audio_semaphore, portMAX_DELAY) == pdTRUE) {
+//       if (client.available()) {
+//         last_update_sent = millis();
+//         client.poll();
+//         WebsocketsMessage msg = client.readBlocking();
+//         const char* buf_ptr = msg.c_str();
+//         size_t bytes_written = msg.length();
+//         i2s_write(I2S_PORT, buf_ptr, bytes_written, &bytes_written, portMAX_DELAY);
 
-//       // Check if the message is "Button pressed!"
-//       if (msg.data() == "Start audio") {
-//         // Handle audio playback in the audio task
-//         //client.send("Start audio");
-//       } else if (msg.data() == "Stop audio") {
-//         // Handle audio stop in the audio task
-//         //client.send("Stop audio");
+//         if (strncmp(buf_ptr, "Start audio", 11) == 0) {
+//           if (!isAudioPlaying) {
+//             startAudioPlayback();
+//             isAudioPlaying = true;
+//           }
+//         } else if (strncmp(buf_ptr, "Stop audio", 10) == 0) {
+//           if (isAudioPlaying) {
+//             stopAudioPlayback();
+//             isAudioPlaying = false;
+//           }
+//         }
+//         vTaskDelay(pdMS_TO_TICKS(20)); // Adjust delay as needed
 //       }
-//     });
+//     }
 //   }
 // }
 
-// void startAudioPlayback() {
-//   // Code to start audio playback
-//   Serial.println("Start audio playback");
-//   // Example: playAudio();
-// }
+void startAudioPlayback() {
+  xSemaphoreGive(audio_semaphore);
+  // Code to start audio playback
+  Serial.println("Start audio playback");
+}
 
-// void stopAudioPlayback() {
-//   // Code to stop audio playback
-//   Serial.println("Stop audio playback");
-//   // Example: stopAudio();
-// }
+void stopAudioPlayback() {
+  xSemaphoreGive(audio_semaphore);
+  // Code to stop audio playback
+  Serial.println("Stop audio playback");
+}
+void i2sInit() {
+  i2s_driver_install(I2S_PORT, &i2s_config_tx, 0, NULL);
+  i2s_set_pin(I2S_PORT, &pin_config_tx);
+}
