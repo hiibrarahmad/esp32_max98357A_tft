@@ -1,3 +1,4 @@
+//image and audio work
 
 #include <SPI.h>
 #include <ArduinoWebsockets.h>
@@ -41,9 +42,9 @@ TFT_eSPI tft = TFT_eSPI(); // Invoke custom library
 #define I2S_SAMPLE_BITS   (32)
 #define UPDATE_INTERVAL   (500)
 
-ezButton button(26); // Pin for the 
-ezButton button1(35); //swetich case button
-bool buttonPressed = false;
+ezButton button(35); // Pin for the 
+ezButton button1(26); //swetich case button
+bool buttonPressed = true;
 unsigned long lastButtonPressTime = 0;
 const unsigned long buttonCooldownTime = 5000; // Cooldown time in milliseconds
 bool button1Pressed = false;
@@ -136,8 +137,11 @@ void loop() {
   }
 }
 
+
+
 void button_task_func(void* arg) {
   while (1) {
+
     button1.loop(); // Call the button's loop function to update its state
 
     if (button1.isPressed() && (millis() - lastButton1PressTime >= button1CooldownTime)) {
@@ -147,7 +151,7 @@ void button_task_func(void* arg) {
       button1PressCount++;
       if (button1PressCount > 2) {
         button1PressCount = 0;
-        Serial.println("buttonpressed");
+        Serial.println("button switch case button pressed");
       }
 
       //xSemaphoreGive(button_semaphore);
@@ -159,20 +163,20 @@ void button_task_func(void* arg) {
 
     vTaskDelay(pdMS_TO_TICKS(20)); // Adjust delay as needed
   }
-    button.loop(); // Call the button's loop function to update its state
+    // button.loop(); // Call the button's loop function to update its state
 
-    if (button.isPressed() && !buttonPressed && (millis() - lastButtonPressTime >= buttonCooldownTime)) {
-      buttonPressed = true;
-      lastButtonPressTime = millis();
+    // if (button.isPressed() && !buttonPressed && (millis() - lastButtonPressTime >= buttonCooldownTime)) {
+    //   buttonPressed = true;
+    //   lastButtonPressTime = millis();
 
-      xSemaphoreGive(button_semaphore);
-    }
+    //   xSemaphoreGive(button_semaphore);
+    // }
 
-    if (buttonPressed && (millis() - lastButtonPressTime >= buttonCooldownTime)) {
-      buttonPressed = false;
-    }
+    // if (buttonPressed && (millis() - lastButtonPressTime >= buttonCooldownTime)) {
+    //   buttonPressed = false;
+    // }
 
-    vTaskDelay(pdMS_TO_TICKS(20)); // Adjust delay as needed
+    // vTaskDelay(pdMS_TO_TICKS(20)); // Adjust delay as needed
     
   }
 
@@ -185,9 +189,8 @@ void ws_comm(void* arg) {
 
         // Handle switch case based on buttonPressCount
         switch (button1PressCount) {
-          case 0: // Button press
+          case 2: // Button press
             {
-              
               client.send("Button pressed!");
               Serial.println("Button pressed");
 
@@ -195,11 +198,12 @@ void ws_comm(void* arg) {
               tft.setCursor(0, 0);
               tft.println("Button pressed");
               client.poll();
-              delay(1000);
+              delay(10000);
+              
             }
             break;
 
-          case 1: // Receive picture
+          case 0: // Receive picture
             { 
               WebsocketsMessage msg = client.readBlocking();
               // Decode and display the image
@@ -223,7 +227,7 @@ void ws_comm(void* arg) {
             }
             break;
 
-          case 2: // Allow audio
+          case 1: // Allow audio
           {
           WebsocketsMessage msg = client.readBlocking();
           const char* buf_ptr = msg.c_str();
@@ -250,33 +254,6 @@ void ws_comm(void* arg) {
 }
 
 
-// void audio_task_func(void* arg) {
-//   while (1) {
-//     if (xSemaphoreTake(audio_semaphore, portMAX_DELAY) == pdTRUE) {
-//       if (client.available()) {
-//         last_update_sent = millis();
-//         client.poll();
-//         WebsocketsMessage msg = client.readBlocking();
-//         const char* buf_ptr = msg.c_str();
-//         size_t bytes_written = msg.length();
-//         i2s_write(I2S_PORT, buf_ptr, bytes_written, &bytes_written, portMAX_DELAY);
-
-//         if (strncmp(buf_ptr, "Start audio", 11) == 0) {
-//           if (!isAudioPlaying) {
-//             startAudioPlayback();
-//             isAudioPlaying = true;
-//           }
-//         } else if (strncmp(buf_ptr, "Stop audio", 10) == 0) {
-//           if (isAudioPlaying) {
-//             stopAudioPlayback();
-//             isAudioPlaying = false;
-//           }
-//         }
-//         vTaskDelay(pdMS_TO_TICKS(20)); // Adjust delay as needed
-//       }
-//     }
-//   }
-// }
 
 void startAudioPlayback() {
   xSemaphoreGive(audio_semaphore);
@@ -290,6 +267,10 @@ void stopAudioPlayback() {
   Serial.println("Stop audio playback");
 }
 void i2sInit() {
+  if (client.available()) {
+    isConnected = true;
+    Serial.println("Client connected");
+  }
   i2s_driver_install(I2S_PORT, &i2s_config_tx, 0, NULL);
   i2s_set_pin(I2S_PORT, &pin_config_tx);
 }
