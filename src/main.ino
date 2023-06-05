@@ -47,7 +47,7 @@ TFT_eSPI tft = TFT_eSPI(); // Invoke custom library
 #define I2S_SAMPLE_BITS   (32)
 #define UPDATE_INTERVAL   (500)
 
-ezButton button(35);
+ezButton button(33);
 ezButton button1(26); // Switch case button
 bool buttonPressed = false;
 unsigned long lastButtonPressTime = 0;
@@ -163,10 +163,9 @@ void button_task_func(void* arg) {
     if (button.isPressed() && !buttonPressed && (millis() - lastButtonPressTime >= buttonCooldownTime)) {
       buttonPressed = true;
       lastButtonPressTime = millis();
-      if(buttonPressed=true){
-      sendButtonPress(); // Send button press data through websocket
+      sendButtonPress(); // Send button press data through websocket      
     }
-    }
+
 
     if (button1.isPressed() && !button1Pressed && (millis() - lastButton1PressTime >= button1CooldownTime)) {
       button1Pressed = true;
