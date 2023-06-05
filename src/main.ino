@@ -1,5 +1,3 @@
-//image and audio work
-
 #include <SPI.h>
 #include <ArduinoWebsockets.h>
 #include <WiFi.h>
@@ -15,13 +13,20 @@
 const char* ssid = "ibrar";
 const char* password = "ibrarahmad";
 
+const char* sta_ssid = "your_router_ssid";
+const char* sta_password = "your_router_password";
+
+const IPAddress staticIP(192, 168, 4, 1); // Static IP address for AP mode
+const IPAddress gateway(192, 168, 1, 1);
+const IPAddress subnet(255, 255, 255, 0);
+
 using namespace websockets;
 
 WebsocketsServer server;
 WebsocketsClient client;
 
 SemaphoreHandle_t connection_established = NULL;
-SemaphoreHandle_t button_semaphore = NULL;
+SemaphoreHandle_t button1_semaphore = NULL;
 SemaphoreHandle_t audio_semaphore = NULL;
 TaskHandle_t ws_comm_task = NULL;
 TaskHandle_t button_task = NULL;
@@ -42,9 +47,9 @@ TFT_eSPI tft = TFT_eSPI(); // Invoke custom library
 #define I2S_SAMPLE_BITS   (32)
 #define UPDATE_INTERVAL   (500)
 
-ezButton button(35); // Pin for the 
-ezButton button1(26); //swetich case button
-bool buttonPressed = true;
+ezButton button(35);
+ezButton button1(26); // Switch case button
+bool buttonPressed = false;
 unsigned long lastButtonPressTime = 0;
 const unsigned long buttonCooldownTime = 5000; // Cooldown time in milliseconds
 bool button1Pressed = false;
@@ -77,7 +82,6 @@ void setup() {
   Serial.begin(115200);
   delay(1000);
 
-
   tft.begin();
   tft.setRotation(3);
   tft.setTextColor(0xFFFF, 0x0000);
@@ -92,11 +96,25 @@ void setup() {
 
   Serial.println();
   Serial.println("Setting AP...");
+  WiFi.softAPConfig(staticIP, gateway, subnet);
   WiFi.softAP(ssid, password);
 
-  IPAddress IP = WiFi.softAPIP();
+  IPAddress AP_IP = WiFi.softAPIP();
   Serial.print("AP IP Address: ");
-  Serial.println(IP);
+  Serial.println(AP_IP);
+
+  Serial.println();
+  Serial.println("Connecting to WiFi...");
+  WiFi.begin(sta_ssid, sta_password);
+
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(1000);
+    Serial.print(".");
+  }
+
+  Serial.println();
+  Serial.print("STA IP Address: ");
+  Serial.println(WiFi.localIP());
 
   server.listen(8888);
 
@@ -109,12 +127,12 @@ void setup() {
   Serial.println("Socket connected");
 
   connection_established = xSemaphoreCreateBinary();
-  button_semaphore = xSemaphoreCreateBinary();
+  button1_semaphore = xSemaphoreCreateBinary();
   audio_semaphore = xSemaphoreCreateBinary();
 
   xTaskCreate(ws_comm, "websocket server", 8192, NULL, 5, &ws_comm_task);
   xTaskCreate(button_task_func, "button task", 2048, NULL, 5, &button_task);
- // xTaskCreate(audio_task_func, "audio task", 4096, NULL, 5, &audio_task); // Create audio task
+  // xTaskCreate(audio_task_func, "audio task", 4096, NULL, 5, &audio_task); // Create audio task
 }
 
 bool tft_output(int16_t x, int16_t y, uint16_t w, uint16_t h, uint16_t* bitmap)
@@ -137,24 +155,33 @@ void loop() {
   }
 }
 
-
-
 void button_task_func(void* arg) {
   while (1) {
+    button.loop(); // Call the button's loop function to update its state
+    button1.loop(); // Call the switch case button's loop function to update its state
 
-    button1.loop(); // Call the button's loop function to update its state
+    if (button.isPressed() && !buttonPressed && (millis() - lastButtonPressTime >= buttonCooldownTime)) {
+      buttonPressed = true;
+      lastButtonPressTime = millis();
+      if(buttonPressed=true){
+      sendButtonPress(); // Send button press data through websocket
+    }
+    }
 
-    if (button1.isPressed() && (millis() - lastButton1PressTime >= button1CooldownTime)) {
+    if (button1.isPressed() && !button1Pressed && (millis() - lastButton1PressTime >= button1CooldownTime)) {
       button1Pressed = true;
       lastButton1PressTime = millis();
 
       button1PressCount++;
-      if (button1PressCount > 2) {
+      if (button1PressCount > 1) {
         button1PressCount = 0;
-        Serial.println("button switch case button pressed");
       }
+      xSemaphoreGive(button1_semaphore); // Notify the switch case button task
+      
+    }
 
-      //xSemaphoreGive(button_semaphore);
+    if (buttonPressed && (millis() - lastButtonPressTime >= buttonCooldownTime)) {
+      buttonPressed = false;
     }
 
     if (button1Pressed && (millis() - lastButton1PressTime >= button1CooldownTime)) {
@@ -163,109 +190,68 @@ void button_task_func(void* arg) {
 
     vTaskDelay(pdMS_TO_TICKS(20)); // Adjust delay as needed
   }
-    // button.loop(); // Call the button's loop function to update its state
+}
 
-    // if (button.isPressed() && !buttonPressed && (millis() - lastButtonPressTime >= buttonCooldownTime)) {
-    //   buttonPressed = true;
-    //   lastButtonPressTime = millis();
 
-    //   xSemaphoreGive(button_semaphore);
-    // }
+void sendButtonPress() {
+  if (client.available()) {
+    client.send("Button pressed!");
+    Serial.println("Button pressed");
+    // Display "Button pressed" on the TFT display
+    tft.setCursor(0, 0);
+    tft.println("Button pressed");
+    client.poll();  
+    }
 
-    // if (buttonPressed && (millis() - lastButtonPressTime >= buttonCooldownTime)) {
-    //   buttonPressed = false;
-    // }
-
-    // vTaskDelay(pdMS_TO_TICKS(20)); // Adjust delay as needed
-    
-  }
+}
 
 
 void ws_comm(void* arg) {
   while (1) {
     if (xSemaphoreTake(connection_established, portMAX_DELAY) == pdTRUE) {
       while (client.available()) {
-        
+        WebsocketsMessage msg = client.readBlocking();
 
-        // Handle switch case based on buttonPressCount
-        switch (button1PressCount) {
-          case 2: // Button press
-            {
-              client.send("Button pressed!");
-              Serial.println("Button pressed");
+        if (button1PressCount == 0) {
+          // Handle case 0: Receive picture
+          // Decode and display the image
+          uint32_t t = millis();
 
-              // Display "Button pressed" on the TFT display
-              tft.setCursor(0, 0);
-              tft.println("Button pressed");
-              client.poll();
-              delay(10000);
-              
-            }
-            break;
+          // Get the width and height in pixels of the JPEG if you wish
+          uint16_t w = 0, h = 0;
+          TJpgDec.getJpgSize(&w, &h, (const uint8_t*)msg.c_str(), msg.length());
+          Serial.print("Width = ");
+          Serial.print(w);
+          Serial.print(", height = ");
+          Serial.println(h);
 
-          case 0: // Receive picture
-            { 
-              WebsocketsMessage msg = client.readBlocking();
-              // Decode and display the image
-              uint32_t t = millis();
+          // Draw the image, top left at 0,0
+          TJpgDec.drawJpg(0, 0, (const uint8_t*)msg.c_str(), msg.length());
 
-              // Get the width and height in pixels of the JPEG if you wish
-              uint16_t w = 0, h = 0;
-              TJpgDec.getJpgSize(&w, &h, (const uint8_t*)msg.c_str(), msg.length());
-              Serial.print("Width = ");
-              Serial.print(w);
-              Serial.print(", height = ");
-              Serial.println(h);
-
-              // Draw the image, top left at 0,0
-              TJpgDec.drawJpg(0, 0, (const uint8_t*)msg.c_str(), msg.length());
-
-              // How much time did rendering take
-              t = millis() - t;
-              Serial.print(t);
-              Serial.println(" ms");
-            }
-            break;
-
-          case 1: // Allow audio
-          {
-          WebsocketsMessage msg = client.readBlocking();
+          // How much time did rendering take
+          t = millis() - t;
+          Serial.print(t);
+          Serial.println(" ms");
+        } else if (button1PressCount == 1) {
+          // Handle case 1: Allow audio
+          Serial.println("audio recieving");
           const char* buf_ptr = msg.c_str();
           size_t bytes_written = msg.length();
           i2s_write(I2S_PORT, buf_ptr, bytes_written, &bytes_written, portMAX_DELAY);
-          Serial.println("audio data recieved");
 
-         if (strncmp(buf_ptr, "Start audio", 11) == 0) {
-            Serial.println("audio playing commad work");
+          if (strncmp(buf_ptr, "Start audio", 11) == 0) {
             isAudioPlaying = true;
-          }
-           else if (strncmp(buf_ptr, "Stop audio", 10) == 0) {
-            Serial.println("audio stop commad work");
+          } else if (strncmp(buf_ptr, "Stop audio", 10) == 0) {
             isAudioPlaying = false;
           }
-          }
-        //  memset(buf_ptr, 0, bytes_written); // Clear the buffer
-            break;
-         }
+        }
+
         vTaskDelay(pdMS_TO_TICKS(20)); // Adjust delay as needed
       }
     }
   }
 }
 
-
-
-void startAudioPlayback() {
-  xSemaphoreGive(audio_semaphore);
-  // Code to start audio playback
-  Serial.println("Start audio playback");
-}
-
-void stopAudioPlayback() {
-  xSemaphoreGive(audio_semaphore);
-  // Code to stop audio playback
-  Serial.println("Stop audio playback");
-}
 void i2sInit() {
   if (client.available()) {
     isConnected = true;
